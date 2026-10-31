@@ -3469,99 +3469,39 @@ describe('VertexChatProvider.callLlamaApi', () => {
     );
   });
 
-  it('sends generationConfig sampling options to Llama models', async () => {
-    provider = new VertexChatProvider('llama-3.3-70b-instruct-maas', {
-      config: {
-        region: 'us-central1',
-        temperature: 0.7,
-        maxOutputTokens: 250,
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 64,
-          topP: 0.9,
-          topK: 40,
+  it.each([
+    { nested: 64, topLevel: 250, expected: 64 },
+    { nested: 0, topLevel: 250, expected: 0 },
+    { nested: undefined, topLevel: 0, expected: 0 },
+  ])(
+    'sends and traces the effective Llama sampling options ($nested, $topLevel)',
+    async ({ nested, topLevel, expected }) => {
+      using span = vi.spyOn(genaiTracer, 'withGenAISpan');
+      const request = mockVertexRequest({ choices: [{ message: { content: 'ok' } }] });
+      provider = new VertexChatProvider('llama-4-scout-17b-16e-instruct-maas', {
+        config: {
+          region: 'us-east5',
+          temperature: 0.7,
+          maxOutputTokens: topLevel,
+          generationConfig: { maxOutputTokens: nested, temperature: 0.2, topP: 0.9, topK: 40 },
         },
-      },
-    });
-
-    const mockRequest = vi.fn().mockResolvedValue({
-      data: { choices: [{ message: { content: 'Llama response content' } }] },
-    });
-    vi.spyOn(vertexUtil, 'getGoogleClient').mockResolvedValue({
-      client: { request: mockRequest } as unknown as JSONClient,
-      projectId: 'test-project-id',
-    });
-    vi.spyOn(vertexUtil, 'resolveProjectId').mockResolvedValue('test-project-id');
-
-    await provider.callLlamaApi('test prompt');
-
-    const body = mockRequest.mock.calls[0][0].data;
-    expect(body.temperature).toBe(0.2);
-    expect(body.max_tokens).toBe(64);
-    expect(body.top_p).toBe(0.9);
-    expect(body.top_k).toBe(40);
-  });
-
-  it('sends an explicit zero generationConfig.maxOutputTokens to Llama models', async () => {
-    provider = new VertexChatProvider('llama-3.3-70b-instruct-maas', {
-      config: {
-        region: 'us-central1',
-        maxOutputTokens: 250,
-        generationConfig: { maxOutputTokens: 0 },
-      },
-    });
-
-    const mockRequest = vi.fn().mockResolvedValue({
-      data: { choices: [{ message: { content: 'Llama response content' } }] },
-    });
-    vi.spyOn(vertexUtil, 'getGoogleClient').mockResolvedValue({
-      client: { request: mockRequest } as unknown as JSONClient,
-      projectId: 'test-project-id',
-    });
-    vi.spyOn(vertexUtil, 'resolveProjectId').mockResolvedValue('test-project-id');
-
-    await provider.callLlamaApi('test prompt');
-
-    expect(mockRequest.mock.calls[0][0].data.max_tokens).toBe(0);
-  });
-
-  it('traces the Llama sampling values that the request body sends', async () => {
-    let spanContext: genaiTracer.GenAISpanContext | undefined;
-    const spanSpy = vi
-      .spyOn(genaiTracer, 'withGenAISpan')
-      .mockImplementation(async (context: any, fn: any) => {
-        spanContext = context;
-        return await fn();
       });
-    provider = new VertexChatProvider('llama-3.3-70b-instruct-maas', {
-      config: {
-        region: 'us-central1',
-        temperature: 0.9,
-        topP: 0.9,
-        maxOutputTokens: 250,
-        generationConfig: { temperature: 0.2, topP: 0.5, maxOutputTokens: 0 },
-      },
-    });
 
-    const mockRequest = vi.fn().mockResolvedValue({
-      data: { choices: [{ message: { content: 'Llama response content' } }] },
-    });
-    vi.spyOn(vertexUtil, 'getGoogleClient').mockResolvedValue({
-      client: { request: mockRequest } as unknown as JSONClient,
-      projectId: 'test-project-id',
-    });
-    vi.spyOn(vertexUtil, 'resolveProjectId').mockResolvedValue('test-project-id');
-
-    try {
       await provider.callApi('test prompt');
-    } finally {
-      spanSpy.mockRestore();
-    }
 
-    const { data } = mockRequest.mock.calls[0][0];
-    expect(data).toMatchObject({ temperature: 0.2, top_p: 0.5, max_tokens: 0 });
-    expect(spanContext).toMatchObject({ temperature: 0.2, topP: 0.5, maxTokens: 0 });
-  });
+      expect(request.mock.calls[0][0].data).toMatchObject({
+        max_tokens: expected,
+        temperature: 0.2,
+        top_p: 0.9,
+        top_k: 40,
+      });
+      expect(span.mock.calls[0][0]).toMatchObject({
+        maxTokens: expected,
+        temperature: 0.2,
+        topP: 0.9,
+      });
+    },
+  );
 
   it('hashes Llama request body cache keys without leaking prompts', async () => {
     const prompt = 'llama-secret-prompt-value';
